@@ -21,7 +21,7 @@ function emit(ctx: Context, receiver: object | undefined, event: string, args: u
 }
 
 describe('scoped-dispatch invariants', () => {
-  type AgentEventName = Extract<keyof Events, `agent/${string}`>
+  type AgentEventName = Exclude<Extract<keyof Events, `agent/${string}`>, 'agent/setup'>
   type EventArgs<K extends keyof Events> = Events[K] extends (...args: infer Args) => unknown ? Args : never
 
   it('ignores ordinary events and rejects a scoped dispatch without a carrier', async () => {

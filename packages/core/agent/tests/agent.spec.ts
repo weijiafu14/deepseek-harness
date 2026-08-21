@@ -2,6 +2,7 @@ import { describe, expect, expectTypeOf, it } from 'vitest'
 import { Context, Service, symbols } from '@deepseek-ai/cordis'
 import { createUserMessage, freezeMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId, type UserMessage } from '@deepseek-ai/dsh-session'
+import { createScope, scopeOf } from '@deepseek-ai/dsh-scope'
 import AgentRegistry, {
   agentEvents,
   Inbox,
@@ -434,5 +435,80 @@ describe('AgentRegistry factory seam', () => {
     await ctx.agents.resume({ resumeSessionId: SessionId('resume-s') })
     const raw = (traced as unknown as { [symbols.original]?: TracedFactory })[symbols.original]
     expect(states.get(raw!)).toEqual(['create', 'resume'])
+  })
+
+  it('awaits setup contributors after caller setup and before publication commit', async () => {
+    const ctx = new Context()
+    await ctx.plugin(AgentRegistry)
+    const order: string[] = []
+    const requests: string[] = []
+    ctx.on('agent/setup', async ({ agent, agentCtx, request }) => {
+      await Promise.resolve()
+      expect(agent).toBe(scopeOf(agentCtx))
+      order.push(`contributor:${String(agentCtx.agent?.id)}`)
+      requests.push(request.kind)
+    })
+    const factory: AgentFactory = {
+      async createAgent(ownerCtx, options) {
+        const agent = stubAgent(options.sessionId)
+        Object.defineProperty(agent, 'ctx', { value: createScope(ownerCtx, agent).ctx.extend({ agent }) })
+        const commit = await options.setup?.(agent.ctx)
+        commit?.commit()
+        order.push('publish:create')
+        return { agent, dispose: () => Promise.resolve() }
+      },
+      async resume(ownerCtx, options) {
+        const agent = stubAgent(options.resumeSessionId)
+        Object.defineProperty(agent, 'ctx', { value: createScope(ownerCtx, agent).ctx.extend({ agent }) })
+        const commit = await options.setup?.(agent.ctx)
+        order.push('publish:resume')
+        commit?.commit()
+        return { agent, dispose: () => Promise.resolve() }
+      },
+    }
+    ctx.agents.setFactory(factory)
+
+    await ctx.agents.create({
+      sessionId: SessionId('setup-create'),
+      setup: async () => {
+        order.push('caller:create')
+        return { commit: () => void order.push('commit:create') }
+      },
+    })
+    await ctx.agents.resume({
+      resumeSessionId: SessionId('setup-resume'),
+      setup: () => void order.push('caller:resume'),
+    })
+
+    expect(requests).toEqual(['create', 'resume'])
+    expect(order).toEqual([
+      'caller:create',
+      'contributor:setup-create',
+      'commit:create',
+      'publish:create',
+      'caller:resume',
+      'contributor:setup-resume',
+      'publish:resume',
+    ])
+  })
+
+  it('rejects creation when a setup contributor fails', async () => {
+    const ctx = new Context()
+    await ctx.plugin(AgentRegistry)
+    ctx.on('agent/setup', () => { throw new Error('setup contributor failed') })
+    const { factory } = stubFactory()
+    const running: AgentFactory = {
+      ...factory,
+      async createAgent(ownerCtx, options) {
+        const agent = stubAgent(options.sessionId)
+        Object.defineProperty(agent, 'ctx', { value: createScope(ownerCtx, agent).ctx.extend({ agent }) })
+        await options.setup?.(agent.ctx)
+        return factory.createAgent(ownerCtx, options)
+      },
+    }
+    ctx.agents.setFactory(running)
+
+    await expect(ctx.agents.create({ sessionId: SessionId('setup-failure') }))
+      .rejects.toThrow('setup contributor failed')
   })
 })

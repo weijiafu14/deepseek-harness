@@ -9,7 +9,7 @@ import { Context, FiberState, getTraceable, Service, symbols } from '@deepseek-a
 import type { Fiber } from '@deepseek-ai/cordis'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { isPromise } from 'node:util/types'
-import { scopeTarget } from '@deepseek-ai/dsh-scope'
+import { scopeOf, scopeTarget } from '@deepseek-ai/dsh-scope'
 import type { Scoped } from '@deepseek-ai/dsh-scope'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import type { TypertContext, TypertLookup } from '@deepseek-ai/dsh-typert-protocol'
@@ -34,6 +34,24 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
 }
 
 declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * Contribute to an unpublished Agent after the caller's setup completes
+     * and before its publication commit. Listeners may mount awaited plugins
+     * or register scoped capabilities through `agentCtx`; a rejection aborts
+     * creation and the factory rolls the unpublished scope back.
+     * @param payload.agent - unpublished Agent owned by `agentCtx`.
+     * @param payload.agentCtx - unpublished Agent scope.
+     * @param payload.request - creation or resume facts, excluding the caller-owned setup callback.
+     * @mode serial
+     */
+    'agent/setup'(payload: {
+      agent: Agent
+      agentCtx: Context
+      request: AgentSetupRequest
+    }): void
+  }
+
   interface Context {
     agents: AgentRegistry
     /**
@@ -154,6 +172,23 @@ export interface ResumeAgentOptions {
    */
   readonly setup?: AgentSetup
 }
+
+/** Creation request exposed to pre-publication setup contributors. */
+export type AgentSetupRequest =
+  | {
+    readonly kind: 'create'
+    readonly sessionId: SessionId
+    readonly meta?: CreateAgentOptions['meta']
+    readonly seed?: CreateAgentOptions['seed']
+    readonly agentOptions?: AgentOptions
+    readonly signal?: AbortSignal
+  }
+  | {
+    readonly kind: 'resume'
+    readonly resumeSessionId: SessionId
+    readonly agentOptions?: AgentOptions
+    readonly signal?: AbortSignal
+  }
 
 /**
  * An owned agent plus its disposer, returned by {@link AgentRegistry.create} /
@@ -410,8 +445,12 @@ export class AgentRegistry extends Service {
     // capability and need no Cordis tracker magic.
     const { target } = this.requireFactory()
     const receiver = getTraceable(ownerCtx, target)
+    const { setup, ...request } = options
     // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply intentionally supplies the caller-traced receiver
-    return Reflect.apply(target.createAgent, receiver, [ownerCtx, options])
+    return Reflect.apply(target.createAgent, receiver, [ownerCtx, {
+      ...options,
+      setup: this.composeSetup(setup, { kind: 'create', ...request }),
+    }])
   }
 
   /**
@@ -425,8 +464,25 @@ export class AgentRegistry extends Service {
     const ownerCtx = this.ctx
     const { target } = this.requireFactory()
     const receiver = getTraceable(ownerCtx, target)
+    const { setup, ...request } = options
     // oxlint-disable-next-line typescript/unbound-method -- Reflect.apply intentionally supplies the caller-traced receiver
-    return Reflect.apply(target.resume, receiver, [ownerCtx, options])
+    return Reflect.apply(target.resume, receiver, [ownerCtx, {
+      ...options,
+      setup: this.composeSetup(setup, { kind: 'resume', ...request }),
+    }])
+  }
+
+  /** Compose caller-owned setup with every registered pre-publication contributor. */
+  private composeSetup(setup: AgentSetup | undefined, request: AgentSetupRequest): AgentSetup {
+    return async (agentCtx) => {
+      const commit = await setup?.(agentCtx)
+      const agent = scopeOf(agentCtx)
+      if (agent === undefined || typeof agent !== 'object') {
+        throw new Error('agent setup contributor received a context without an Agent scope')
+      }
+      await this.ctx.serial('agent/setup', { agent: agent as Agent, agentCtx, request })
+      return commit
+    }
   }
 
   /**

@@ -48,7 +48,7 @@ interface AgentHandle {
 }
 ```
 
-`CreateAgentOptions` 携带共享标识以及新 agent 发布前所需的一切：会话元数据（`meta`——已校验的 `cwd`、fork 谱系、seed 边界、来源分类、委派深度）、fork 用的可选 `seed` 回放前缀、按 agent 的 `AgentOptions`、仅创建期有效的取消 `signal`，以及 `setup`。`ResumeAgentOptions` 是持久标识的对应项：`resumeSessionId`、`agentOptions`、`signal` 与 `setup`。`setup` 回调（`AgentSetup`）在两个 id 都尚未发布时组装 agent 的作用域世界——凡经 `agentCtx` 注册的内容都先于 `agent/created` 与第一次提示词组装存在——并可返回一个在发布前一刻调用的同步 commit；setup 拒绝、commit 抛出或所有者 dispose（资源释放）都会回滚事务，两个 id 均不发布。
+`CreateAgentOptions` 携带共享标识以及新 agent 发布前所需的一切：会话元数据（`meta`——已校验的 `cwd`、fork 谱系、seed 边界、来源分类、委派深度）、fork 用的可选 `seed` 回放前缀、按 agent 的 `AgentOptions`、仅创建期有效的取消 `signal`，以及 `setup`。`ResumeAgentOptions` 是持久标识的对应项：`resumeSessionId`、`agentOptions`、`signal` 与 `setup`。调用方的 `setup` 回调（`AgentSetup`）在两个 id 都尚未发布时组装 agent 的作用域世界——凡经 `agentCtx` 注册的内容都先于 `agent/created` 与第一次提示词组装存在——并可返回一个在发布前一刻调用的同步 commit。随后，串行 `agent/setup` 贡献者会收到同一个尚未发布的 `agentCtx` 与请求事实，使部署插件无需让每个 Agent 创建方转发自己的 setup 回调，也能安装逐 Agent 能力。调用方 setup 拒绝、贡献者拒绝、commit 抛出或所有者 dispose（资源释放）都会回滚事务，两个 id 均不发布。
 
 `AgentFactory` 是注册表背后的创建接口：循环经 `ctx.agents.setFactory()` 注册其工厂，因此消费方使用 `ctx.agents` 时无需依赖具体循环包。确切的 `create`/`resume` 签名及回滚约定见下方[生成区块](#ctxagents--agentregistry)。
 
@@ -973,6 +973,29 @@ The session lifecycle began, once before the first turn. Use `agent.inject()` to
 Types: [Scoped](scope.md)
 
 Source: [`packages/core/agent/src/runtime-types.ts:217`](../../packages/core/agent/src/runtime-types.ts)
+
++<a id="agentsetup--serial"></a>
+
+#### `agent/setup` — serial
+
+Contribute to an unpublished Agent after the caller's setup completes and before its publication commit. Listeners may mount awaited plugins or register scoped capabilities through `agentCtx`; a rejection aborts creation and the factory rolls the unpublished scope back.
+
+```ts cordis-catalog
+/**
+ * Contribute to an unpublished Agent after the caller's setup completes
+ * and before its publication commit. Listeners may mount awaited plugins
+ * or register scoped capabilities through `agentCtx`; a rejection aborts
+ * creation and the factory rolls the unpublished scope back.
+ * @param payload.agent - unpublished Agent owned by `agentCtx`.
+ * @param payload.agentCtx - unpublished Agent scope.
+ * @param payload.request - creation or resume facts, excluding the caller-owned setup callback.
+ * @mode serial
+ */
+'agent/setup'(payload: { agent: Agent; agentCtx: Context; request: AgentSetupRequest }): void
+```
+
+Source: [`packages/core/agent/src/index.ts:48`](../../packages/core/agent/src/index.ts)
+
 
 <a id="agentstatus--emit"></a>
 

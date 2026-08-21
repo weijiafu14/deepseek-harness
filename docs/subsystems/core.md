@@ -46,7 +46,7 @@ interface AgentHandle {
 }
 ```
 
-`CreateAgentOptions` carries the shared identity and everything a fresh agent needs before publication: session metadata (`meta` — validated `cwd`, fork lineage, seed boundary, origin classification, delegation depth), an optional `seed` replay prefix for forks, per-agent `AgentOptions`, a creation-only cancellation `signal`, and `setup`. `ResumeAgentOptions` is the persisted-identity counterpart: `resumeSessionId`, `agentOptions`, `signal`, and `setup`. The `setup` callback (`AgentSetup`) composes the agent's scoped world while both ids are still unpublished — everything registered through `agentCtx` exists before `agent/created` and the first prompt assembly — and may return a synchronous commit invoked immediately before publication; a setup rejection, commit throw, or owner disposal rolls the transaction back without publishing either id.
+`CreateAgentOptions` carries the shared identity and everything a fresh agent needs before publication: session metadata (`meta` — validated `cwd`, fork lineage, seed boundary, origin classification, delegation depth), an optional `seed` replay prefix for forks, per-agent `AgentOptions`, a creation-only cancellation `signal`, and `setup`. `ResumeAgentOptions` is the persisted-identity counterpart: `resumeSessionId`, `agentOptions`, `signal`, and `setup`. The caller's `setup` callback (`AgentSetup`) composes the agent's scoped world while both ids are still unpublished — everything registered through `agentCtx` exists before `agent/created` and the first prompt assembly — and may return a synchronous commit invoked immediately before publication. Serial `agent/setup` contributors then receive the same unpublished `agentCtx` and request facts, so a deployment plugin can install per-agent capabilities without every Agent creator forwarding its own setup callback. A caller setup rejection, contributor rejection, commit throw, or owner disposal rolls the transaction back without publishing either id.
 
 `AgentFactory` is the creation interface behind the registry: the loop registers its factory via `ctx.agents.setFactory()`, so consumers use `ctx.agents` without depending on the concrete loop package. The exact `create`/`resume` signatures and rollback contracts are in the [generated section](#ctxagents--agentregistry) below.
 
@@ -965,6 +965,29 @@ The session lifecycle began, once before the first turn. Use `agent.inject()` to
 Types: [Scoped](scope.md)
 
 Source: [`packages/core/agent/src/runtime-types.ts:217`](../../packages/core/agent/src/runtime-types.ts)
+
++<a id="agentsetup--serial"></a>
+
+#### `agent/setup` — serial
+
+Contribute to an unpublished Agent after the caller's setup completes and before its publication commit. Listeners may mount awaited plugins or register scoped capabilities through `agentCtx`; a rejection aborts creation and the factory rolls the unpublished scope back.
+
+```ts cordis-catalog
+/**
+ * Contribute to an unpublished Agent after the caller's setup completes
+ * and before its publication commit. Listeners may mount awaited plugins
+ * or register scoped capabilities through `agentCtx`; a rejection aborts
+ * creation and the factory rolls the unpublished scope back.
+ * @param payload.agent - unpublished Agent owned by `agentCtx`.
+ * @param payload.agentCtx - unpublished Agent scope.
+ * @param payload.request - creation or resume facts, excluding the caller-owned setup callback.
+ * @mode serial
+ */
+'agent/setup'(payload: { agent: Agent; agentCtx: Context; request: AgentSetupRequest }): void
+```
+
+Source: [`packages/core/agent/src/index.ts:48`](../../packages/core/agent/src/index.ts)
+
 
 <a id="agentstatus--emit"></a>
 
